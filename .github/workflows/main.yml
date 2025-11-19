@@ -17,7 +17,7 @@ jobs:
           NAME: RezzzFy
         with:
           arch: arm64
-          compiler: clang/9
+          compiler: llvm-9
           defconfig: vendor/whyred_defconfig
           image: Image.gz-dtb
 
