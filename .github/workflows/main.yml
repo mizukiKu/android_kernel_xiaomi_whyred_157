@@ -1,0 +1,78 @@
+name: RezzzFy Project
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: SUKISU ULTRA setup
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/kerjarodipp-glitch/SukiSU-Ultra/refs/heads/susfs-main/kernel/setup.sh" | bash -s susfs-main
+
+      - name: Add required kernel config (KPM, KALLSYMS)
+        run: |
+          DEFCONFIG="vendor/whyred-perf_defconfig"
+
+          add() { grep -qx "$1" "$DEFCONFIG" || echo "$1" >> "$DEFCONFIG" ; }
+
+          add "CONFIG_KPM=y"
+          add "CONFIG_KALLSYMS=y"
+          add "CONFIG_KALLSYMS_ALL=y"
+
+          echo "Updated defconfig:"
+          tail -n 20 "$DEFCONFIG"
+
+      - name: Build Kernel
+        uses: lemniskett/android-kernel-actions@master
+        id: build
+        env:
+          NAME: RezzzFy
+        with:
+          arch: arm64
+          compiler: gcc/12
+          defconfig: vendor/whyred-perf_defconfig
+          image: Image.gz-dtb
+
+      - name: Patch final Image.gz-dtb
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_OUT="${{ steps.build.outputs.outfile }}"
+          echo "Kernel output: $FINAL_OUT"
+
+          mkdir -p out/arch/arm64/boot
+          cp "$FINAL_OUT" out/Image.gz-dtb
+
+          # 1. Extract oImage
+          gunzip -c out/Image.gz-dtb > out/arch/arm64/boot/oImage
+
+          cd out/arch/arm64/boot
+
+          # 2. Download patch
+          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch
+          chmod 777 patch
+
+          # 3. Apply patch
+          ./patch
+
+          # 4. Replace oImage → Image
+          mv -f oImage Image
+
+          cd ../../..
+
+          # 5. Recompress into patched Image.gz-dtb
+          gzip -c out/arch/arm64/boot/Image > out/Image.gz-dtb
+
+          echo "Patched Image.gz-dtb generated successfully."
+
+      - name: Upload patched kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-kernel
+          path: out/
