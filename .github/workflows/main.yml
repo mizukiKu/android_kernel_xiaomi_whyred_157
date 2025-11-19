@@ -17,7 +17,7 @@ jobs:
           NAME: RezzzFy
         with:
           arch: arm64
-          compiler: gcc/12
+          compiler: gcc/9
           defconfig: vendor/whyred_defconfig
           image: Image.gz-dtb
 
