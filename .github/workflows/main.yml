@@ -18,7 +18,7 @@ jobs:
         with:
           arch: arm64
           compiler: gcc/12
-          defconfig: vendor/whyred-perf_defconfig
+          defconfig: vendor/whyred_defconfig
           image: Image.gz-dtb
 
       - name: Patch final Image.gz-dtb
