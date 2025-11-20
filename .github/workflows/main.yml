@@ -1,124 +1,149 @@
 name: RezzzFy Project
 
-on:
-  workflow_dispatch:
+on: workflow_dispatch:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    env:
-      # Global env untuk job — CROSS_COMPILE akan dipakai saat build
-      CROSS_COMPILE: aarch64-linux-gnu-
-      ARCH: arm64
+jobs: build: runs-on: ubuntu-latest env: # Global env untuk job — CROSS_COMPILE akan dipakai saat build CROSS_COMPILE: aarch64-linux-gnu- ARCH: arm64
 
-    steps:
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
+steps:
+  - name: Checkout kernel source
+    uses: actions/checkout@v4
 
-      - name: Install build dependencies
-        # install tools yang sering diperlukan untuk build kernel & patching
-        run: |
-          sudo apt update
-          # dasar build tools + curl/wget + xz utils
-          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
-                              libncurses5-dev libncursesw5-dev libncurses-dev \
-                              ccache curl wget xz-utils git python3 python3-distutils
-      - name: Setup Linaro GCC 7 (aarch64) toolchain
-        id: setup_toolchain
-        run: |
-          set -euo pipefail
+  - name: Install build dependencies (robust)
+    run: |
+      set -euo pipefail
 
-          # lokasi & file Linaro GCC7 (aarch64). Jika kamu mau versi lain, ubah URL ini.
-          TOOLCHAIN_URL="https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz"
-          TOOLCHAIN_DIR="/opt/gcc-linaro-7.5.0-aarch64"
-          TARBALL_NAME="$(basename "$TOOLCHAIN_URL")"
+      sudo apt update
 
-          echo "Toolchain URL: $TOOLCHAIN_URL"
-          # download to runner
-          mkdir -p /tmp/linaro-toolchain
-          cd /tmp/linaro-toolchain
+      # ensure add-apt-repository exists
+      sudo apt install -y software-properties-common || true
 
-          if [ ! -f "$TARBALL_NAME" ]; then
-            echo "Downloading Linaro GCC7..."
-            wget -q --show-progress "$TOOLCHAIN_URL"
+      # try install python3-distutils; if not available, enable universe and retry
+      if ! sudo apt install -y python3-distutils; then
+        echo "python3-distutils not available directly — enabling 'universe' and retrying"
+        sudo add-apt-repository -y universe
+        sudo apt update
+        if ! sudo apt install -y python3-distutils; then
+          echo "Still cannot install python3-distutils. Will try distro-specific package name."
+          # detect python3 minor version (e.g. 3.11 -> python3.11-distutils)
+          PYVER=$(python3 -c "import sys; print('{}.{}'.format(sys.version_info[0], sys.version_info[1]))")
+          PKG="python${PYVER}-distutils"
+          echo "Trying package: $PKG"
+          if ! sudo apt install -y "${PKG}"; then
+            echo "Distro-specific distutils not available. Falling back to pip setuptools install."
+            sudo apt install -y python3-pip
+            python3 -m pip install --upgrade pip setuptools wheel
+            echo "Installed setuptools via pip as fallback."
           else
-            echo "Tarball already present."
+            echo "Installed $PKG"
           fi
+        else
+          echo "Installed python3-distutils after enabling universe."
+        fi
+      else
+        echo "Installed python3-distutils"
+      fi
 
-          # extract to /opt (use sudo to ensure permissions)
-          sudo mkdir -p "$TOOLCHAIN_DIR"
-          sudo tar -xJf "$TARBALL_NAME" --strip-components=1 -C "$TOOLCHAIN_DIR"
+      # now install the rest of deps (safe to run regardless)
+      sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+                          libncurses5-dev libncursesw5-dev libncurses-dev \
+                          ccache curl wget xz-utils git python3
 
-          # add to PATH for this job
-          echo "Adding toolchain to PATH"
-          echo "/opt/gcc-linaro-7.5.0-aarch64/bin" | sudo tee /etc/profile.d/gcc_linaro7_path.sh >/dev/null
-          sudo chmod +x /etc/profile.d/gcc_linaro7_path.sh
-          # Export for current step and following steps
-          echo "PATH=/opt/gcc-linaro-7.5.0-aarch64/bin:$PATH" >> $GITHUB_ENV
+  - name: Setup Linaro GCC 7 (aarch64) toolchain
+    id: setup_toolchain
+    run: |
+      set -euo pipefail
 
-          # Verify
-          echo "Toolchain installed to: $TOOLCHAIN_DIR"
-          aarch64-linux-gnu-gcc --version || true
-          aarch64-linux-gnu-g++ --version || true
-          aarch64-linux-gnu-ar --version || true
-          # show which binary will be used
-          which aarch64-linux-gnu-gcc || true
+      # lokasi & file Linaro GCC7 (aarch64). Jika kamu mau versi lain, ubah URL ini.
+      TOOLCHAIN_URL="https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz"
+      TOOLCHAIN_DIR="/opt/gcc-linaro-7.5.0-aarch64"
+      TARBALL_NAME="$(basename "$TOOLCHAIN_URL")"
 
-      - name: Verify host compilers (optional, info)
-        run: |
-          echo "Host gcc:"
-          gcc --version | head -n1 || true
-          echo "Host clang:"
-          clang --version | head -n1 || true
+      echo "Toolchain URL: $TOOLCHAIN_URL"
+      # download to runner
+      mkdir -p /tmp/linaro-toolchain
+      cd /tmp/linaro-toolchain
 
-      - name: Build Kernel
-        uses: lemniskett/android-kernel-actions@master
-        id: build
-        env:
-          NAME: RezzzFy
-          # pastikan action pakai CROSS_COMPILE jika action mendukung env
-          CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
-        with:
-          arch: arm64
-          compiler: gcc/7
-          defconfig: vendor/whyred_defconfig
-          image: Image.gz-dtb
+      if [ ! -f "$TARBALL_NAME" ]; then
+        echo "Downloading Linaro GCC7..."
+        wget -q --show-progress "$TOOLCHAIN_URL"
+      else
+        echo "Tarball already present."
+      fi
 
-      - name: Patch final Image.gz-dtb
-        shell: bash
-        run: |
-          set -euo pipefail
+      # extract to /opt (use sudo to ensure permissions)
+      sudo mkdir -p "$TOOLCHAIN_DIR"
+      sudo tar -xJf "$TARBALL_NAME" --strip-components=1 -C "$TOOLCHAIN_DIR"
 
-          FINAL_OUT="${{ steps.build.outputs.outfile }}"
-          echo "Kernel output: $FINAL_OUT"
+      # add to PATH for this job
+      echo "Adding toolchain to PATH"
+      echo "/opt/gcc-linaro-7.5.0-aarch64/bin" | sudo tee /etc/profile.d/gcc_linaro7_path.sh >/dev/null
+      sudo chmod +x /etc/profile.d/gcc_linaro7_path.sh
+      # Export for current step and following steps
+      echo "PATH=/opt/gcc-linaro-7.5.0-aarch64/bin:$PATH" >> $GITHUB_ENV
 
-          mkdir -p out/arch/arm64/boot
-          cp "$FINAL_OUT" out/Image.gz-dtb
+      # Verify
+      echo "Toolchain installed to: $TOOLCHAIN_DIR"
+      aarch64-linux-gnu-gcc --version || true
+      aarch64-linux-gnu-g++ --version || true
+      aarch64-linux-gnu-ar --version || true
+      # show which binary will be used
+      which aarch64-linux-gnu-gcc || true
 
-          # 1. Extract oImage
-          gunzip -c out/Image.gz-dtb > out/arch/arm64/boot/oImage
+  - name: Verify host compilers (optional, info)
+    run: |
+      echo "Host gcc:"
+      gcc --version | head -n1 || true
+      echo "Host clang:"
+      clang --version | head -n1 || true
 
-          cd out/arch/arm64/boot
+  - name: Build Kernel
+    uses: lemniskett/android-kernel-actions@master
+    id: build
+    env:
+      NAME: RezzzFy
+      # pastikan action pakai CROSS_COMPILE jika action mendukung env
+      CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
+    with:
+      arch: arm64
+      compiler: gcc/7
+      defconfig: vendor/whyred_defconfig
+      image: Image.gz-dtb
 
-          # 2. Download patch
-          curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch
-          chmod 777 patch
+  - name: Patch final Image.gz-dtb
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          # 3. Apply patch
-          ./patch
+      FINAL_OUT="${{ steps.build.outputs.outfile }}"
+      echo "Kernel output: $FINAL_OUT"
 
-          # 4. Replace oImage → Image
-          mv -f oImage Image
+      mkdir -p out/arch/arm64/boot
+      cp "$FINAL_OUT" out/Image.gz-dtb
 
-          cd ../../..
+      # 1. Extract oImage
+      gunzip -c out/Image.gz-dtb > out/arch/arm64/boot/oImage
 
-          # 5. Recompress into patched Image.gz-dtb
-          gzip -c out/arch/arm64/boot/Image > out/Image.gz-dtb
+      cd out/arch/arm64/boot
 
-          echo "Patched Image.gz-dtb generated."
+      # 2. Download patch
+      curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux" -o patch
+      chmod 777 patch
 
-      - name: Upload patched kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: patched-kernel
-          path: out/
+      # 3. Apply patch
+      ./patch
+
+      # 4. Replace oImage → Image
+      mv -f oImage Image
+
+      cd ../../..
+
+      # 5. Recompress into patched Image.gz-dtb
+      gzip -c out/arch/arm64/boot/Image > out/Image.gz-dtb
+
+      echo "Patched Image.gz-dtb generated."
+
+  - name: Upload patched kernel
+    uses: actions/upload-artifact@v4
+    with:
+      name: patched-kernel
+      path: out/
