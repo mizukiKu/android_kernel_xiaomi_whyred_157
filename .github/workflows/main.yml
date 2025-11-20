@@ -6,15 +6,78 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Global env untuk job — CROSS_COMPILE akan dipakai saat build
+      CROSS_COMPILE: aarch64-linux-gnu-
+      ARCH: arm64
+
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        # install tools yang sering diperlukan untuk build kernel & patching
+        run: |
+          sudo apt update
+          # dasar build tools + curl/wget + xz utils
+          sudo apt install -y build-essential bc bison flex libssl-dev libelf-dev \
+                              libncurses5-dev libncursesw5-dev libncurses-dev \
+                              ccache curl wget xz-utils git python3 python3-distutils
+      - name: Setup Linaro GCC 7 (aarch64) toolchain
+        id: setup_toolchain
+        run: |
+          set -euo pipefail
+
+          # lokasi & file Linaro GCC7 (aarch64). Jika kamu mau versi lain, ubah URL ini.
+          TOOLCHAIN_URL="https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz"
+          TOOLCHAIN_DIR="/opt/gcc-linaro-7.5.0-aarch64"
+          TARBALL_NAME="$(basename "$TOOLCHAIN_URL")"
+
+          echo "Toolchain URL: $TOOLCHAIN_URL"
+          # download to runner
+          mkdir -p /tmp/linaro-toolchain
+          cd /tmp/linaro-toolchain
+
+          if [ ! -f "$TARBALL_NAME" ]; then
+            echo "Downloading Linaro GCC7..."
+            wget -q --show-progress "$TOOLCHAIN_URL"
+          else
+            echo "Tarball already present."
+          fi
+
+          # extract to /opt (use sudo to ensure permissions)
+          sudo mkdir -p "$TOOLCHAIN_DIR"
+          sudo tar -xJf "$TARBALL_NAME" --strip-components=1 -C "$TOOLCHAIN_DIR"
+
+          # add to PATH for this job
+          echo "Adding toolchain to PATH"
+          echo "/opt/gcc-linaro-7.5.0-aarch64/bin" | sudo tee /etc/profile.d/gcc_linaro7_path.sh >/dev/null
+          sudo chmod +x /etc/profile.d/gcc_linaro7_path.sh
+          # Export for current step and following steps
+          echo "PATH=/opt/gcc-linaro-7.5.0-aarch64/bin:$PATH" >> $GITHUB_ENV
+
+          # Verify
+          echo "Toolchain installed to: $TOOLCHAIN_DIR"
+          aarch64-linux-gnu-gcc --version || true
+          aarch64-linux-gnu-g++ --version || true
+          aarch64-linux-gnu-ar --version || true
+          # show which binary will be used
+          which aarch64-linux-gnu-gcc || true
+
+      - name: Verify host compilers (optional, info)
+        run: |
+          echo "Host gcc:"
+          gcc --version | head -n1 || true
+          echo "Host clang:"
+          clang --version | head -n1 || true
 
       - name: Build Kernel
         uses: lemniskett/android-kernel-actions@master
         id: build
         env:
           NAME: RezzzFy
+          # pastikan action pakai CROSS_COMPILE jika action mendukung env
+          CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
         with:
           arch: arm64
           compiler: gcc/7
