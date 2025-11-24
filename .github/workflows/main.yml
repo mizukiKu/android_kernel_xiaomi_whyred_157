@@ -25,12 +25,6 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
-      - name: SUKISU ULTRA setup
-        # keep using the repo script, it will see BRANCH from job env
-        run: |
-          # Download and execute the KernelSU Next setup script.
-          curl -LSs "https://raw.githubusercontent.com/kerjarodipp-glitch/SukiSU-Ultra/refs/heads/susfs-main/kernel/setup.sh" | bash -s susfs-main
-
       - name: Android kernel build
         uses: lemniskett/android-kernel-actions@master
         id: build
