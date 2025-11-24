@@ -6,24 +6,48 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Provided variables
+      BRANCH: android-4.19-stable
+      KMI_GENERATION: '0'
+
+      LLVM: '1'
+      DEPMOD: depmod
+      CLANG_PREBUILT_BIN: prebuilts-master/clang/host/linux-x86/clang-r399163b/bin
+      BUILDTOOLS_PREBUILT_BIN: build/build-tools/path/linux-x86
+
+      EXTRA_CMDS: ''
+      STOP_SHIP_TRACEPRINTK: '1'
+      IN_KERNEL_MODULES: '1'
+      DO_NOT_STRIP_MODULES: '1'
+
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
       - name: SUKISU ULTRA setup
+        # keep using the repo script, it will see BRANCH from job env
         run: |
           # Download and execute the KernelSU Next setup script.
-          # This script typically prepares the kernel source for KernelSU integration.
           curl -LSs "https://raw.githubusercontent.com/kerjarodipp-glitch/SukiSU-Ultra/refs/heads/susfs-main/kernel/setup.sh" | bash -s susfs-main
- 
+
       - name: Android kernel build
         uses: lemniskett/android-kernel-actions@master
         id: build
         env:
-          NAME: RezzzFy
+          # also expose the important build env to this step explicitly (optional: already in job env)
+          CLANG_PREBUILT_BIN: ${{ env.CLANG_PREBUILT_BIN }}
+          BUILDTOOLS_PREBUILT_BIN: ${{ env.BUILDTOOLS_PREBUILT_BIN }}
+          LLVM: ${{ env.LLVM }}
+          DEPMOD: ${{ env.DEPMOD }}
+          EXTRA_CMDS: ${{ env.EXTRA_CMDS }}
+          STOP_SHIP_TRACEPRINTK: ${{ env.STOP_SHIP_TRACEPRINTK }}
+          IN_KERNEL_MODULES: ${{ env.IN_KERNEL_MODULES }}
+          DO_NOT_STRIP_MODULES: ${{ env.DO_NOT_STRIP_MODULES }}
         with:
           arch: arm64
-          compiler: clang/12
+          # switch compiler to generic clang so the action can use your prebuilts via CLANG_PREBUILT_BIN
+          compiler: clang
           defconfig: vendor/whyred_defconfig
           image: Image.gz-dtb
 
@@ -32,6 +56,4 @@ jobs:
         with:
           name: built-kernel
           path: |
-            # This path refers to the output file of the 'Android kernel build' step.
-            # It's typically the compiled kernel image (e.g., Image.gz-dtb).
             ${{ steps.build.outputs.outfile }}
