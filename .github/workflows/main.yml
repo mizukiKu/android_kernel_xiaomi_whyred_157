@@ -1,53 +1,188 @@
-name: RezzzFy Project
+name: Build WHYRED kernel (4.19) - workflow_dispatch
 
 on:
   workflow_dispatch:
+    inputs:
+      build_perf:
+        description: 'Build tools/perf on runner (only on x86_64). true/false'
+        required: false
+        default: 'false'
+      push_changes:
+        description: 'If "true", commit & push applied patches/backports to repo'
+        required: false
+        default: 'false'
+      use_prebuilts_toolchain:
+        description: 'If "true", download Android prebuilts toolchain (aarch64 clang/gcc).'
+        required: false
+        default: 'false'
+      cross_prefix:
+        description: 'Cross compile prefix (e.g. aarch64-linux-gnu-)'
+        required: false
+        default: 'aarch64-linux-gnu-'
+      kernel_defconfig:
+        description: 'Which defconfig to use (e.g. whyred_defconfig)'
+        required: false
+        default: 'whyred_defconfig'
+      make_jobs:
+        description: 'Number of parallel make jobs (-j). Use nproc or a number.'
+        required: false
+        default: '$(nproc)'
+
+concurrency:
+  group: build-whyred-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # needed if we push commits/artifacts
+  id-token: write
 
 jobs:
-  build:
+  build-kernel:
+    name: Build kernel (ubuntu-latest)
     runs-on: ubuntu-latest
     env:
-      # Provided variables
-      BRANCH: android-4.19-stable
-      KMI_GENERATION: '0'
-
-      LLVM: '1'
-      DEPMOD: depmod
-      CLANG_PREBUILT_BIN: prebuilts-master/clang/host/linux-x86/clang-r399163b/bin
-      BUILDTOOLS_PREBUILT_BIN: build/build-tools/path/linux-x86
-
-      EXTRA_CMDS: ''
-      STOP_SHIP_TRACEPRINTK: '1'
-      IN_KERNEL_MODULES: '1'
-      DO_NOT_STRIP_MODULES: '1'
-
+      ARCH: arm64
+      ODIR: out
+      CROSS_COMPILE: ${{ github.event.inputs.cross_prefix }}
+      DEFCONFIG: ${{ github.event.inputs.kernel_defconfig }}
+      MAKE_J: ${{ github.event.inputs.make_jobs }}
     steps:
-      - name: Checkout kernel source
+
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
-
-      - name: Android kernel build
-        uses: lemniskett/android-kernel-actions@master
-        id: build
-        env:
-          # also expose the important build env to this step explicitly (optional: already in job env)
-          CLANG_PREBUILT_BIN: ${{ env.CLANG_PREBUILT_BIN }}
-          BUILDTOOLS_PREBUILT_BIN: ${{ env.BUILDTOOLS_PREBUILT_BIN }}
-          LLVM: ${{ env.LLVM }}
-          DEPMOD: ${{ env.DEPMOD }}
-          EXTRA_CMDS: ${{ env.EXTRA_CMDS }}
-          STOP_SHIP_TRACEPRINTK: ${{ env.STOP_SHIP_TRACEPRINTK }}
-          IN_KERNEL_MODULES: ${{ env.IN_KERNEL_MODULES }}
-          DO_NOT_STRIP_MODULES: ${{ env.DO_NOT_STRIP_MODULES }}
         with:
-          arch: arm64
-          # switch compiler to generic clang so the action can use your prebuilts via CLANG_PREBUILT_BIN
-          compiler: clang
-          defconfig: vendor/whyred_defconfig
-          image: Image.gz-dtb
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: true
 
-      - name: Upload Built Kernel
+      - name: Fix safe.directory for GitHub Actions runners (prevent dubious ownership)
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Show basic info
+        run: |
+          echo "WORKDIR: $GITHUB_WORKSPACE"
+          echo "ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE DEFCONFIG=$DEFCONFIG MAKE_J=$MAKE_J"
+
+      - name: Install host dependencies (for kernel build & perf)
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential bc bison flex libelf-dev libaudit-dev libnuma-dev \
+            libdw-dev libunwind-dev python3 python3-dev pkg-config libssl-dev libncurses5-dev \
+            gcc-aarch64-linux-gnu device-tree-compiler rsync
+        # note: gcc-aarch64-linux-gnu is a simple cross-gcc fallback. If you need specific prebuilts/clang,
+        # use the use_prebuilts_toolchain input to download them in the next step.
+
+      - name: Optional: download Android prebuilts toolchain (clang/gcc) 
+        if: ${{ github.event.inputs.use_prebuilts_toolchain == 'true' }}
+        run: |
+          # Example: download a typical prebuilts GCC/clang tarball (adjust URL if you prefer specific release)
+          echo "Downloading prebuilts (user requested). You can change this to your preferred toolchain."
+          mkdir -p prebuilts
+          # NOTE: replace the URL below with the exact prebuilts you want (this is a placeholder)
+          # curl -L -o prebuilts/toolchain.tar.xz "https://example.com/path/to/prebuilts.tar.xz"
+          # tar -xf prebuilts/toolchain.tar.xz -C prebuilts
+          echo "If you need an Android clang toolchain, update this step to fetch it from your trusted source."
+
+      - name: Apply patches from patches/ (git apply)
+        id: apply-patches
+        run: |
+          if [ -d patches ] && [ "$(ls -A patches)" ]; then
+            echo "Applying patches in patches/ ..."
+            for p in patches/*.patch; do
+              [ -e "$p" ] || continue
+              echo "Applying $p"
+              git apply --index "$p" || { echo "git apply failed on $p — aborting"; git status; exit 1; }
+            done
+            echo "All patches applied. Creating commit."
+            git add -A
+            git commit -m "Applied patches from CI ($(date --iso-8601=seconds))" || echo "No changes to commit"
+          else
+            echo "No patches/ directory or empty, skipping."
+          fi
+
+      - name: Optionally push patches/commits back to repo
+        if: ${{ github.event.inputs.push_changes == 'true' }}
+        run: |
+          echo "Pushing commits back to repository (push_changes=true)"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          git push origin HEAD:${{ github.ref_name || github.ref }}
+
+      - name: Prepare build dir & defconfig
+        run: |
+          mkdir -p $ODIR
+          make O=$ODIR $DEFCONFIG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE
+
+      - name: Build kernel (core)
+        id: build
+        run: |
+          set -e
+          # skip building tools/perf during cross compile to save errors — build perf separately if requested
+          # Some older kernels try to build perf by default; pass KBUILD_BUILD_USER / disable steps if necessary
+          make -j${{ env.MAKE_J }} O=$ODIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE \
+               KBUILD_BUILD_USER=ci KBUILD_BUILD_VERSION=1 || { echo "Kernel build failed"; tail -n 200 $ODIR/*.log || true; exit 1; }
+
+      - name: Build modules & dtbs
+        if: success()
+        run: |
+          make -j${{ env.MAKE_J }} O=$ODIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules dtbs || true
+          # collect modules (if any)
+          if [ -d $ODIR/lib/modules ]; then
+            echo "Modules built"
+          else
+            echo "No modules directory"
+          fi
+
+      - name: Optional: Build perf (on runner host x86_64)
+        if: ${{ github.event.inputs.build_perf == 'true' }}
+        run: |
+          # Build perf under tools/perf on runner (must be host x86_64). This step will fail on non-x86.
+          echo "Building tools/perf on runner (host build)"
+          cd tools/perf || { echo "tools/perf missing"; exit 0; }
+          PYTHON=python3 make -j${{ env.MAKE_J }} || { echo "perf build failed"; exit 1; }
+          # Copy perf binary to top-level artifacts folder
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          cp ./perf $GITHUB_WORKSPACE/artifacts/ || echo "perf binary not found to copy"
+
+      - name: Collect build artifacts
+        run: |
+          ART_DIR=$GITHUB_WORKSPACE/artifacts
+          mkdir -p $ART_DIR
+          # common kernel outputs (tweak names according to repo build outputs)
+          # Look for Image, zImage, Image.gz, dtbs, modules package, dtbo
+          find $ODIR -maxdepth 3 -type f \( -name 'Image*' -o -name 'zImage*' -o -name '*.img' -o -name '*.dtb' -o -name '*.dtbo' \) -print | tee $ART_DIR/artifact-list.txt || true
+          # copy DTBs
+          if [ -d $ODIR/arch/arm64/boot/dts ]; then
+            cp -r $ODIR/arch/arm64/boot/dts $ART_DIR/ || true
+          fi
+          # copy Image / zImage if exists
+          cp -a $(find $ODIR -type f -name 'Image*' -print 2>/dev/null | head -n1) $ART_DIR/ 2>/dev/null || true
+          cp -a $(find $ODIR -type f -name 'zImage*' -print 2>/dev/null | head -n1) $ART_DIR/ 2>/dev/null || true
+          # prepare modules tar (if exists)
+          if [ -d $ODIR/lib/modules ]; then
+            tar -C $ODIR -czf $ART_DIR/modules.tar.gz lib/modules || true
+          fi
+          # copy kernel .config
+          cp -a $ODIR/.config $ART_DIR/.config || true
+          ls -la $ART_DIR || true
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: built-kernel
-          path: |
-            ${{ steps.build.outputs.outfile }}
+          name: whyred-kernel-artifacts
+          path: artifacts/
+
+      - name: Create release (optional) — comment out if not needed
+        if: ${{ false }}
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: artifacts
+          tag: build-${{ github.run_id }}
+          name: WHYRED-kernel-${{ github.run_id }}
+
+      - name: Output build result
+        run: |
+          echo "Build finished. Artifacts uploaded (whyred-kernel-artifacts)."
+          echo "If build failed, check the 'Build kernel' step logs above."
