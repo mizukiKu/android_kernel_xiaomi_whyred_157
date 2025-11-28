@@ -100,14 +100,6 @@ jobs:
         run: |
           make -j${{ env.MAKE_J }} O=$ODIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE modules dtbs || true
 
-      - name: Optional: Build perf (host)
-        if: ${{ github.event.inputs.build_perf == 'true' }}
-        run: |
-          cd tools/perf || { echo "tools/perf missing"; exit 0; }
-          PYTHON=python3 make -j${{ env.MAKE_J }}
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          cp ./perf $GITHUB_WORKSPACE/artifacts/ || true
-
       - name: Collect build artifacts
         run: |
           ART_DIR=$GITHUB_WORKSPACE/artifacts
